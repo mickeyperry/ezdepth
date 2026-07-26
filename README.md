@@ -7,6 +7,7 @@ drop it straight into After Effects as a guide layer.
 ## Features
 
 - 🖼️ One click on the current playhead frame: no exporting, no round-tripping through another app
+- 🎞️ **Full-range mode**: converts every frame in the comp's work area and imports it as one depth PNG sequence layer
 - 🌓 Grayscale output, near = white — matches AE's own depth-based effects (Camera Lens Blur, Turbulent Displace, Depth Matte)
 - 👻 Imports as a **guide layer** — visible in the viewer, excluded from renders
 - 🔁 Re-running replaces the previous depth layer for that comp instead of stacking duplicates
@@ -46,6 +47,18 @@ cached under `%USERPROFILE%\.cache\huggingface`).
 
 Capture is always taken at full comp resolution regardless of your current
 viewer Resolution/Down Sample Factor (Full/Half/Third/Quarter).
+
+### Full-range mode
+
+Click **Generate Depth (Full Range)** instead to process every frame in the
+comp's **work area** (which is the whole comp duration unless you've narrowed
+it) — a progress bar tracks capture + conversion frame by frame, and the
+result imports as a single `<CompName>_DepthSeq` guide layer spanning the
+range. This runs Depth Anything V2 per frame with no temporal awareness, so
+expect some frame-to-frame flicker on moving footage — that's a model
+limitation (a video-specific model would fix it, at the cost of a heavier
+engine), not a bug. Budget roughly a second or two per frame end-to-end on a
+modern NVIDIA GPU.
 
 ## GPU acceleration
 

@@ -121,6 +121,44 @@ body {
     transform: none;
 }
 
+.run-btn--secondary {
+    background: transparent;
+    border: 1px solid rgba(255, 0, 200, 0.4);
+    color: #ff6bc8;
+    box-shadow: none;
+}
+
+.run-btn--secondary:hover:not(:disabled) {
+    background: rgba(255, 0, 200, 0.08);
+    box-shadow: 0 0 12px rgba(255, 0, 200, 0.2);
+}
+
+.progress-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.progress-track {
+    height: 6px;
+    border-radius: 3px;
+    background: #1a1a2e;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #ff00c8, #7b2ff7);
+    transition: width 0.2s ease;
+}
+
+.progress-label {
+    font-size: 10px;
+    color: #888;
+    text-align: center;
+}
+
 .toggle-row {
     display: flex;
     align-items: center;

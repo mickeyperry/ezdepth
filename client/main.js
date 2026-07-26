@@ -20,15 +20,22 @@
     var ENGINE_PORT = 8787;
     var OUTPUT_FOLDER_KEY = 'ezdepth.outputFolder';
 
-    var engineDot    = document.getElementById('engineDot');
-    var statusBar    = document.getElementById('statusBar');
-    var generateBtn  = document.getElementById('generateBtn');
-    var invertToggle = document.getElementById('invertToggle');
-    var outputFolder = document.getElementById('outputFolder');
-    var browseBtn    = document.getElementById('browseBtn');
+    var engineDot     = document.getElementById('engineDot');
+    var statusBar     = document.getElementById('statusBar');
+    var generateBtn   = document.getElementById('generateBtn');
+    var rangeBtn      = document.getElementById('rangeBtn');
+    var invertToggle  = document.getElementById('invertToggle');
+    var outputFolder  = document.getElementById('outputFolder');
+    var browseBtn     = document.getElementById('browseBtn');
+    var progressWrap  = document.getElementById('progressWrap');
+    var progressFill  = document.getElementById('progressFill');
+    var progressLabel = document.getElementById('progressLabel');
 
     var engineReady = false;
     var pollTimer = null;
+    var busy = false;
+
+    function pad5(n) { return ('00000' + n).slice(-5); }
 
     // Find a Python interpreter to run the engine with. Prefers the
     // extension-local venv created by install.bat; falls back to a few
@@ -168,9 +175,27 @@
         req.end();
     }
 
+    function showProgress(current, total) {
+        progressWrap.style.display = 'block';
+        var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+        progressFill.style.width = pct + '%';
+        progressLabel.textContent = 'Frame ' + current + ' / ' + total;
+    }
+
+    function hideProgress() {
+        progressWrap.style.display = 'none';
+    }
+
+    function setBusy(isBusy) {
+        busy = isBusy;
+        generateBtn.disabled = isBusy;
+        rangeBtn.disabled = isBusy;
+    }
+
     function fail(msg) {
         setStatus(msg, 'error');
-        generateBtn.disabled = false;
+        hideProgress();
+        setBusy(false);
     }
 
     function initOutputFolder() {
@@ -195,19 +220,26 @@
         });
     }
 
-    function generateDepth() {
+    function requireReady() {
         if (!engineReady) {
             setStatus('Engine not ready yet - please wait.', 'error');
-            return;
+            return false;
         }
+        if (busy) return false;
         var destFolder = outputFolder.value.trim();
         if (!destFolder) {
             setStatus('Choose an output folder first.', 'error');
-            return;
+            return false;
         }
         try { localStorage.setItem(OUTPUT_FOLDER_KEY, destFolder); } catch (e) {}
+        return true;
+    }
 
-        generateBtn.disabled = true;
+    function generateDepth() {
+        if (!requireReady()) return;
+        var destFolder = outputFolder.value.trim();
+
+        setBusy(true);
         setStatus('Capturing current frame...', 'working');
 
         evalEx('EZDEPTH.saveCurrentFrame()', function (res) {
@@ -229,7 +261,7 @@
                 });
                 evalEx("EZDEPTH.importResult('" + escapeForEval(importArgs) + "')", function (res2) {
                     var imported = safeParse(res2);
-                    generateBtn.disabled = false;
+                    setBusy(false);
                     if (!imported || imported.error) { fail(imported ? imported.error : 'Import failed.'); return; }
                     setStatus('Depth layer added: ' + imported.layer, 'success');
                 });
@@ -237,7 +269,77 @@
         });
     }
 
+    // Full-range mode: captures every frame in the comp's work area (which
+    // is the whole comp duration unless the user has narrowed it), converts
+    // each one, then imports the result as a single depth PNG sequence layer.
+    function generateDepthRange() {
+        if (!requireReady()) return;
+        var destFolder = outputFolder.value.trim();
+
+        setBusy(true);
+        setStatus('Reading comp range...', 'working');
+
+        evalEx('EZDEPTH.getRangeInfo()', function (res) {
+            var range = safeParse(res);
+            if (!range || range.error) { fail(range ? range.error : 'No response from AE.'); return; }
+
+            var total = range.frameCount;
+            showProgress(0, total);
+            setStatus('Rendering frame 1 / ' + total + '...', 'working');
+
+            function processFrame(i) {
+                if (i >= total) {
+                    finishRange();
+                    return;
+                }
+                var t = range.workAreaStart + i / range.frameRate;
+                var frameArgs = JSON.stringify({
+                    compId: range.compId,
+                    compName: range.compName,
+                    sessionDir: range.sessionDir,
+                    index: i,
+                    time: t
+                });
+                evalEx("EZDEPTH.saveFrameAt('" + escapeForEval(frameArgs) + "')", function (fres) {
+                    var frame = safeParse(fres);
+                    if (!frame || frame.error) { fail(frame ? frame.error : 'Frame capture failed at index ' + i + '.'); return; }
+
+                    var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
+                    postDepth({ in: frame.framePath, out: depthPath, invert: invertToggle.checked }, function (err) {
+                        if (err) { fail('Frame ' + i + ': ' + err); return; }
+                        showProgress(i + 1, total);
+                        setStatus('Rendering frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + '...', 'working');
+                        processFrame(i + 1);
+                    });
+                });
+            }
+
+            function finishRange() {
+                setStatus('Importing depth sequence (' + total + ' frames)...', 'working');
+                var importArgs = JSON.stringify({
+                    sessionDir: range.sessionDir,
+                    frameCount: total,
+                    compName: range.compName,
+                    compId: range.compId,
+                    outputFolder: destFolder,
+                    workAreaStart: range.workAreaStart,
+                    frameRate: range.frameRate
+                });
+                evalEx("EZDEPTH.importSequenceResult('" + escapeForEval(importArgs) + "')", function (ires) {
+                    var imported = safeParse(ires);
+                    hideProgress();
+                    setBusy(false);
+                    if (!imported || imported.error) { fail(imported ? imported.error : 'Sequence import failed.'); return; }
+                    setStatus('Depth sequence added: ' + imported.layer + ' (' + total + ' frames)', 'success');
+                });
+            }
+
+            processFrame(0);
+        });
+    }
+
     generateBtn.addEventListener('click', generateDepth);
+    rangeBtn.addEventListener('click', generateDepthRange);
     browseBtn.addEventListener('click', browseOutputFolder);
     window.addEventListener('unload', function () {
         if (pollTimer) clearTimeout(pollTimer);

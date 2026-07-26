@@ -35,7 +35,6 @@
     var engineReady = false;
     var pollTimer = null;
     var busy = false;
-    var activeRangeRestore = null; // { compId, compName, origResFactor } while a range run is in flight
     var cancelRequested = false;
 
     function pad5(n) { return ('00000' + n).slice(-5); }
@@ -199,11 +198,6 @@
         setStatus(msg, 'error');
         hideProgress();
         setBusy(false);
-        if (activeRangeRestore) {
-            var restoreArgs = JSON.stringify(activeRangeRestore);
-            activeRangeRestore = null;
-            evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
-        }
     }
 
     function initOutputFolder() {
@@ -289,7 +283,7 @@
     // is the whole comp duration unless the user has narrowed it), converts
     // each one, then imports the result as a single depth PNG sequence layer.
     function cancelDepthRange() {
-        if (!busy || !activeRangeRestore) return;
+        if (!busy) return;
         cancelRequested = true;
         setStatus('Cancelling after the current frame...', 'working');
     }
@@ -300,93 +294,35 @@
 
         cancelRequested = false;
         setBusy(true);
-        setStatus('Reading comp range...', 'working');
+        setStatus('Rendering via After Effects render queue... (see AE\'s own render progress window; this can take a while and can\'t be cancelled from here mid-render)', 'working');
 
-        evalEx('EZDEPTH.getRangeInfo()', function (res) {
+        evalEx('EZDEPTH.renderRangeToSequence()', function (res) {
             var range = safeParse(res);
-            if (!range || range.error) { fail(range ? range.error : 'No response from AE.'); return; }
-
-            activeRangeRestore = { compId: range.compId, compName: range.compName, origResFactor: range.origResFactor };
+            if (!range || range.error) {
+                var msg = range ? range.error : 'No response from AE.';
+                if (range && range.diagnostics) {
+                    console.log('[ezdepth] renderRangeToSequence diagnostics:', range.diagnostics);
+                    msg += ' (' + JSON.stringify(range.diagnostics) + ')';
+                }
+                fail(msg);
+                return;
+            }
 
             var total = range.frameCount;
-            var consecutiveFailures = 0;
-            var framePaths = new Array(total);
+            var framePaths = range.framePaths;
             showProgress(0, total);
-            setStatus('Rendering frame 1 / ' + total + ' in AE...', 'working');
+            setStatus('Converting frame 1 / ' + total + ' in the background (AE is free)...', 'working');
 
-            function cancelCleanup(doneCount, verb) {
-                cancelRequested = false;
-                hideProgress();
-                setBusy(false);
-                if (activeRangeRestore) {
-                    var restoreArgs = JSON.stringify(activeRangeRestore);
-                    activeRangeRestore = null;
-                    evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
-                }
-                setStatus('Cancelled after ' + verb + ' ' + doneCount + ' / ' + total + ' frames.', 'error');
-            }
-
-            // Phase 1: capture every frame from AE, back to back, with no
-            // waiting on the depth engine in between - AE finishes its part
-            // as fast as it can instead of pausing after every frame.
-            function captureFrame(i) {
-                if (cancelRequested) { cancelCleanup(i, 'rendering'); return; }
-                if (i >= total) {
-                    // Done with AE entirely - release the comp's resolution
-                    // now, before the (potentially long) conversion pass,
-                    // since AE isn't needed again until the final import.
-                    var restoreArgs = JSON.stringify(activeRangeRestore);
-                    activeRangeRestore = null;
-                    evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')", function () {
-                        showProgress(0, total);
-                        setStatus('Converting frame 1 / ' + total + ' in the background (AE is free)...', 'working');
-                        convertFrame(0);
-                    });
+            // Depth conversion: pure Node <-> Python HTTP calls from here on -
+            // no AE round trips at all, so AE stays completely free.
+            function convertFrame(i) {
+                if (cancelRequested) {
+                    cancelRequested = false;
+                    hideProgress();
+                    setBusy(false);
+                    setStatus('Cancelled after converting ' + i + ' / ' + total + ' frames.', 'error');
                     return;
                 }
-                var t = range.workAreaStart + i / range.frameRate;
-                var frameArgs = JSON.stringify({
-                    compId: range.compId,
-                    compName: range.compName,
-                    sessionDir: range.sessionDir,
-                    index: i,
-                    time: t
-                });
-                evalEx("EZDEPTH.saveFrameAt('" + escapeForEval(frameArgs) + "')", function (fres) {
-                    var frame = safeParse(fres);
-                    if (!frame || frame.error) {
-                        consecutiveFailures++;
-                        var msg = frame ? frame.error : ('Frame capture failed at index ' + i + '.');
-                        if (frame && frame.diagnostics) {
-                            console.log('[ezdepth] saveFrameAt diagnostics:', frame.diagnostics);
-                            msg += ' (' + JSON.stringify(frame.diagnostics) + ')';
-                        }
-                        // AE's renderer seems to get stuck rather than fail
-                        // randomly per frame - once a couple of frames in a
-                        // row come back empty, further attempts in the same
-                        // AE session tend to keep failing too. Stop instead
-                        // of grinding through the rest of the range.
-                        if (consecutiveFailures >= 2) {
-                            fail(msg + ' -- stopping after ' + consecutiveFailures + ' failures in a row. This looks like AE\'s renderer got stuck; try restarting After Effects before running Full Range again.');
-                            return;
-                        }
-                        setStatus('Frame ' + i + ' failed, retrying...', 'working');
-                        captureFrame(i);
-                        return;
-                    }
-                    consecutiveFailures = 0;
-                    framePaths[i] = frame.framePath;
-                    showProgress(i + 1, total);
-                    setStatus('Rendering frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + ' in AE...', 'working');
-                    captureFrame(i + 1);
-                });
-            }
-
-            // Phase 2: convert every captured frame through the depth engine.
-            // Pure Node <-> Python HTTP calls from here on - no AE round
-            // trips at all, so AE stays completely free during this part.
-            function convertFrame(i) {
-                if (cancelRequested) { cancelCleanup(i, 'converting'); return; }
                 if (i >= total) {
                     finishRange();
                     return;
@@ -420,7 +356,7 @@
                 });
             }
 
-            captureFrame(0);
+            convertFrame(0);
         });
     }
 

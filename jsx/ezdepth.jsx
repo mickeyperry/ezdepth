@@ -109,6 +109,14 @@ var EZDEPTH = (function () {
         var frameRate = comp.frameRate;
         var frameCount = Math.max(1, Math.round(comp.workAreaDuration * frameRate));
 
+        // Force full resolution ONCE for the whole batch instead of toggling
+        // it per frame - flipping resolutionFactor on every single capture
+        // was invalidating AE's internal render cache repeatedly and is the
+        // likely cause of frames silently coming back as empty 0-byte files
+        // partway through a range run.
+        var origResFactor = comp.resolutionFactor;
+        comp.resolutionFactor = [1, 1];
+
         return JSON.stringify({
             compName: comp.name,
             compId: comp.id,
@@ -118,13 +126,26 @@ var EZDEPTH = (function () {
             workAreaStart: comp.workAreaStart,
             workAreaDuration: comp.workAreaDuration,
             frameCount: frameCount,
-            sessionDir: sessionDir.fsName
+            sessionDir: sessionDir.fsName,
+            origResFactor: origResFactor
         });
     }
 
+    // Restores whatever Resolution/Down Sample Factor the comp had before a
+    // range run. Called after the batch finishes, and best-effort on error
+    // too, so a failed/aborted run doesn't leave the comp stuck at full res.
+    function restoreResolution(argsJson) {
+        var args = parse(argsJson); // { compId, compName, origResFactor }
+        var comp = findComp(args.compId, args.compName);
+        if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
+        try { comp.resolutionFactor = args.origResFactor; } catch (e) {}
+        return JSON.stringify({ ok: true });
+    }
+
     // Captures a single frame of a range-render at an explicit time, into
-    // <sessionDir>/src/frame_NNNNN.png. Same full-resolution + stable-write
-    // handling as saveCurrentFrame.
+    // <sessionDir>/src/frame_NNNNN.png. Assumes the caller (getRangeInfo)
+    // already forced full resolution for the whole batch. Retries once if
+    // the first attempt comes back as an empty/stuck file.
     function saveFrameAt(argsJson) {
         var args = parse(argsJson); // { compId, compName, sessionDir, index, time }
         var comp = findComp(args.compId, args.compName);
@@ -138,33 +159,40 @@ var EZDEPTH = (function () {
         }
 
         var file = new File(args.sessionDir + "/src/frame_" + pad5(args.index) + ".png");
-        var origResFactor = comp.resolutionFactor;
-        try {
-            comp.resolutionFactor = [1, 1];
-            comp.saveFrameToPng(args.time, file);
-        } catch (e) {
-            comp.resolutionFactor = origResFactor;
-            return JSON.stringify({ error: "saveFrameToPng failed: " + e.toString() });
-        }
-        comp.resolutionFactor = origResFactor;
+        var attempts = 2;
+        var lastDiagnostics = null;
 
-        if (!waitForStableFile(file, FRAME_WAIT_MS)) {
-            return JSON.stringify({
-                error: "saveFrameToPng did not produce a readable file: " + file.fsName,
-                diagnostics: {
-                    srcFolderExists: srcFolder.exists,
-                    fileExists: file.exists,
-                    fileLength: file.exists ? file.length : -1,
-                    time: args.time,
-                    index: args.index,
-                    compName: comp.name,
-                    compDuration: comp.duration,
-                    workAreaStart: comp.workAreaStart,
-                    workAreaDuration: comp.workAreaDuration
-                }
-            });
+        for (var attempt = 1; attempt <= attempts; attempt++) {
+            if (file.exists) file.remove();
+            try {
+                comp.saveFrameToPng(args.time, file);
+            } catch (e) {
+                return JSON.stringify({ error: "saveFrameToPng failed: " + e.toString() });
+            }
+
+            if (waitForStableFile(file, FRAME_WAIT_MS)) {
+                return JSON.stringify({ framePath: file.fsName, index: args.index });
+            }
+
+            lastDiagnostics = {
+                attempt: attempt,
+                srcFolderExists: srcFolder.exists,
+                fileExists: file.exists,
+                fileLength: file.exists ? file.length : -1,
+                time: args.time,
+                index: args.index,
+                compName: comp.name,
+                compDuration: comp.duration,
+                workAreaStart: comp.workAreaStart,
+                workAreaDuration: comp.workAreaDuration
+            };
+            $.sleep(300);
         }
-        return JSON.stringify({ framePath: file.fsName, index: args.index });
+
+        return JSON.stringify({
+            error: "saveFrameToPng did not produce a readable file after " + attempts + " attempts: " + file.fsName,
+            diagnostics: lastDiagnostics
+        });
     }
 
     // Imports the completed <sessionDir>/depth/ PNG sequence, moves it into
@@ -326,6 +354,7 @@ var EZDEPTH = (function () {
         chooseOutputFolder: chooseOutputFolder,
         importResult: importResult,
         getRangeInfo: getRangeInfo,
+        restoreResolution: restoreResolution,
         saveFrameAt: saveFrameAt,
         importSequenceResult: importSequenceResult
     };

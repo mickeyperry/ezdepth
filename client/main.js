@@ -34,6 +34,7 @@
     var engineReady = false;
     var pollTimer = null;
     var busy = false;
+    var activeRangeRestore = null; // { compId, compName, origResFactor } while a range run is in flight
 
     function pad5(n) { return ('00000' + n).slice(-5); }
 
@@ -196,6 +197,11 @@
         setStatus(msg, 'error');
         hideProgress();
         setBusy(false);
+        if (activeRangeRestore) {
+            var restoreArgs = JSON.stringify(activeRangeRestore);
+            activeRangeRestore = null;
+            evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
+        }
     }
 
     function initOutputFolder() {
@@ -291,7 +297,10 @@
             var range = safeParse(res);
             if (!range || range.error) { fail(range ? range.error : 'No response from AE.'); return; }
 
+            activeRangeRestore = { compId: range.compId, compName: range.compName, origResFactor: range.origResFactor };
+
             var total = range.frameCount;
+            var consecutiveFailures = 0;
             showProgress(0, total);
             setStatus('Rendering frame 1 / ' + total + '...', 'working');
 
@@ -311,14 +320,26 @@
                 evalEx("EZDEPTH.saveFrameAt('" + escapeForEval(frameArgs) + "')", function (fres) {
                     var frame = safeParse(fres);
                     if (!frame || frame.error) {
+                        consecutiveFailures++;
                         var msg = frame ? frame.error : ('Frame capture failed at index ' + i + '.');
                         if (frame && frame.diagnostics) {
                             console.log('[ezdepth] saveFrameAt diagnostics:', frame.diagnostics);
                             msg += ' (' + JSON.stringify(frame.diagnostics) + ')';
                         }
-                        fail(msg);
+                        // AE's renderer seems to get stuck rather than fail
+                        // randomly per frame - once a couple of frames in a
+                        // row come back empty, further attempts in the same
+                        // AE session tend to keep failing too. Stop instead
+                        // of grinding through the rest of the range.
+                        if (consecutiveFailures >= 2) {
+                            fail(msg + ' -- stopping after ' + consecutiveFailures + ' failures in a row. This looks like AE\'s renderer got stuck; try restarting After Effects before running Full Range again.');
+                            return;
+                        }
+                        setStatus('Frame ' + i + ' failed, retrying...', 'working');
+                        processFrame(i);
                         return;
                     }
+                    consecutiveFailures = 0;
 
                     var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
                     postDepth({ in: frame.framePath, out: depthPath, invert: invertToggle.checked }, function (err) {
@@ -341,6 +362,9 @@
                     workAreaStart: range.workAreaStart,
                     frameRate: range.frameRate
                 });
+                var restoreArgs = JSON.stringify(activeRangeRestore);
+                activeRangeRestore = null;
+                evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
                 evalEx("EZDEPTH.importSequenceResult('" + escapeForEval(importArgs) + "')", function (ires) {
                     var imported = safeParse(ires);
                     hideProgress();

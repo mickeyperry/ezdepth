@@ -30,11 +30,13 @@
     var progressWrap  = document.getElementById('progressWrap');
     var progressFill  = document.getElementById('progressFill');
     var progressLabel = document.getElementById('progressLabel');
+    var cancelBtn     = document.getElementById('cancelBtn');
 
     var engineReady = false;
     var pollTimer = null;
     var busy = false;
     var activeRangeRestore = null; // { compId, compName, origResFactor } while a range run is in flight
+    var cancelRequested = false;
 
     function pad5(n) { return ('00000' + n).slice(-5); }
 
@@ -286,10 +288,17 @@
     // Full-range mode: captures every frame in the comp's work area (which
     // is the whole comp duration unless the user has narrowed it), converts
     // each one, then imports the result as a single depth PNG sequence layer.
+    function cancelDepthRange() {
+        if (!busy || !activeRangeRestore) return;
+        cancelRequested = true;
+        setStatus('Cancelling after the current frame...', 'working');
+    }
+
     function generateDepthRange() {
         if (!requireReady()) return;
         var destFolder = outputFolder.value.trim();
 
+        cancelRequested = false;
         setBusy(true);
         setStatus('Reading comp range...', 'working');
 
@@ -305,6 +314,16 @@
             setStatus('Rendering frame 1 / ' + total + '...', 'working');
 
             function processFrame(i) {
+                if (cancelRequested) {
+                    cancelRequested = false;
+                    hideProgress();
+                    setBusy(false);
+                    var restoreArgs = JSON.stringify(activeRangeRestore);
+                    activeRangeRestore = null;
+                    evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
+                    setStatus('Cancelled after frame ' + i + ' / ' + total + '.', 'error');
+                    return;
+                }
                 if (i >= total) {
                     finishRange();
                     return;
@@ -380,6 +399,7 @@
 
     generateBtn.addEventListener('click', generateDepth);
     rangeBtn.addEventListener('click', generateDepthRange);
+    cancelBtn.addEventListener('click', cancelDepthRange);
     browseBtn.addEventListener('click', browseOutputFolder);
     window.addEventListener('unload', function () {
         if (pollTimer) clearTimeout(pollTimer);

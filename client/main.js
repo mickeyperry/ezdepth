@@ -310,22 +310,38 @@
 
             var total = range.frameCount;
             var consecutiveFailures = 0;
+            var framePaths = new Array(total);
             showProgress(0, total);
-            setStatus('Rendering frame 1 / ' + total + '...', 'working');
+            setStatus('Rendering frame 1 / ' + total + ' in AE...', 'working');
 
-            function processFrame(i) {
-                if (cancelRequested) {
-                    cancelRequested = false;
-                    hideProgress();
-                    setBusy(false);
+            function cancelCleanup(doneCount, verb) {
+                cancelRequested = false;
+                hideProgress();
+                setBusy(false);
+                if (activeRangeRestore) {
                     var restoreArgs = JSON.stringify(activeRangeRestore);
                     activeRangeRestore = null;
                     evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
-                    setStatus('Cancelled after frame ' + i + ' / ' + total + '.', 'error');
-                    return;
                 }
+                setStatus('Cancelled after ' + verb + ' ' + doneCount + ' / ' + total + ' frames.', 'error');
+            }
+
+            // Phase 1: capture every frame from AE, back to back, with no
+            // waiting on the depth engine in between - AE finishes its part
+            // as fast as it can instead of pausing after every frame.
+            function captureFrame(i) {
+                if (cancelRequested) { cancelCleanup(i, 'rendering'); return; }
                 if (i >= total) {
-                    finishRange();
+                    // Done with AE entirely - release the comp's resolution
+                    // now, before the (potentially long) conversion pass,
+                    // since AE isn't needed again until the final import.
+                    var restoreArgs = JSON.stringify(activeRangeRestore);
+                    activeRangeRestore = null;
+                    evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')", function () {
+                        showProgress(0, total);
+                        setStatus('Converting frame 1 / ' + total + ' in the background (AE is free)...', 'working');
+                        convertFrame(0);
+                    });
                     return;
                 }
                 var t = range.workAreaStart + i / range.frameRate;
@@ -355,18 +371,32 @@
                             return;
                         }
                         setStatus('Frame ' + i + ' failed, retrying...', 'working');
-                        processFrame(i);
+                        captureFrame(i);
                         return;
                     }
                     consecutiveFailures = 0;
+                    framePaths[i] = frame.framePath;
+                    showProgress(i + 1, total);
+                    setStatus('Rendering frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + ' in AE...', 'working');
+                    captureFrame(i + 1);
+                });
+            }
 
-                    var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
-                    postDepth({ in: frame.framePath, out: depthPath, invert: invertToggle.checked }, function (err) {
-                        if (err) { fail('Frame ' + i + ': ' + err); return; }
-                        showProgress(i + 1, total);
-                        setStatus('Rendering frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + '...', 'working');
-                        processFrame(i + 1);
-                    });
+            // Phase 2: convert every captured frame through the depth engine.
+            // Pure Node <-> Python HTTP calls from here on - no AE round
+            // trips at all, so AE stays completely free during this part.
+            function convertFrame(i) {
+                if (cancelRequested) { cancelCleanup(i, 'converting'); return; }
+                if (i >= total) {
+                    finishRange();
+                    return;
+                }
+                var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
+                postDepth({ in: framePaths[i], out: depthPath, invert: invertToggle.checked }, function (err) {
+                    if (err) { fail('Frame ' + i + ': ' + err); return; }
+                    showProgress(i + 1, total);
+                    setStatus('Converting frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + ' in the background (AE is free)...', 'working');
+                    convertFrame(i + 1);
                 });
             }
 
@@ -381,9 +411,6 @@
                     workAreaStart: range.workAreaStart,
                     frameRate: range.frameRate
                 });
-                var restoreArgs = JSON.stringify(activeRangeRestore);
-                activeRangeRestore = null;
-                evalEx("EZDEPTH.restoreResolution('" + escapeForEval(restoreArgs) + "')");
                 evalEx("EZDEPTH.importSequenceResult('" + escapeForEval(importArgs) + "')", function (ires) {
                     var imported = safeParse(ires);
                     hideProgress();
@@ -393,7 +420,7 @@
                 });
             }
 
-            processFrame(0);
+            captureFrame(0);
         });
     }
 

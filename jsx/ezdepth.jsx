@@ -10,6 +10,14 @@ var EZDEPTH = (function () {
     // over a few seconds just to render, let alone write out.
     var FRAME_WAIT_MS = 20000;
 
+    // Name of the Output Module Template used for full-range PNG sequence
+    // renders. Format can't be set directly via scripting in current AE
+    // builds (setSettings() rejects it as read-only), only by applying a
+    // named template - so this one has to be created once, by hand, in
+    // After Effects: Edit > Templates > Output Module... > New..., Format
+    // set to "PNG Sequence", saved with this exact name.
+    var OUTPUT_TEMPLATE_NAME = "EzDepth PNG Sequence";
+
     function parse(json) { return eval("(" + json + ")"); }
 
     function activeComp() {
@@ -124,12 +132,20 @@ var EZDEPTH = (function () {
             rqItem.timeSpanDuration = workAreaDuration;
 
             var om = rqItem.outputModule(1);
-            // Write the fields directly instead of reading via getSettings()
-            // first - the GetSettingsFormat enum member needed to read
-            // string-settable values isn't reliably present across AE
-            // versions/builds, but setSettings() accepts a partial object
-            // and merges it into the existing settings either way.
-            om.setSettings({ "Format": "PNG Sequence", "Channels": "RGB" });
+            // Format/Channels are read-only via setSettings() in current AE
+            // builds - the output format can only be switched by applying a
+            // named Output Module Template, which has to exist already (AE
+            // doesn't ship one called this by default). See OUTPUT_TEMPLATE_NAME.
+            try {
+                om.applyTemplate(OUTPUT_TEMPLATE_NAME);
+            } catch (eTemplate) {
+                rqItem.remove();
+                return JSON.stringify({
+                    error: "Output Module template \"" + OUTPUT_TEMPLATE_NAME + "\" not found - one-time setup needed. " +
+                        "In After Effects: Edit menu > Templates > Output Module... > New..., set Format to \"PNG Sequence\", " +
+                        "name it exactly \"" + OUTPUT_TEMPLATE_NAME + "\", click OK, then OK again. Then try Full Range again."
+                });
+            }
             om.file = new File(srcFolder.fsName + "/frame_[#####].png");
 
             app.project.renderQueue.render();

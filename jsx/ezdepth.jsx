@@ -92,30 +92,63 @@ var EZDEPTH = (function () {
 
     function pad5(n) { return ("00000" + n).slice(-5); }
 
-    // Work-area info for the active comp, plus a fresh scratch session folder
-    // (with src/ and depth/ subfolders) that the range-capture loop writes
-    // into. Work area defaults to the whole comp duration unless the user
-    // has narrowed it, so "range" naturally means "full comp" by default.
-    function getRangeInfo() {
+    // Renders every frame in the comp's work area to a PNG sequence using
+    // AE's own Render Queue - a real render through AE's native pipeline,
+    // not a scripted per-frame viewer grab. This sidesteps the whole class
+    // of problems the old saveFrameToPng loop hit (viewer resolution/render
+    // cache state, frames silently coming back empty partway through a long
+    // run) since the render queue has its own independent render settings
+    // and AE shows its own native render progress/cancel UI while it runs.
+    // Work area defaults to the whole comp duration unless the user has
+    // narrowed it, so "range" naturally means "full comp" by default.
+    function renderRangeToSequence() {
         var comp = activeComp();
         if (!comp) return JSON.stringify({ error: "No active composition." });
 
         var stamp = Math.round(new Date().getTime()) + "_" + Math.round(Math.random() * 1e6);
         var sessionDir = new Folder(Folder.temp.fsName + "/EzDepth-temp/range_" + stamp);
         sessionDir.create();
-        new Folder(sessionDir.fsName + "/src").create();
+        var srcFolder = new Folder(sessionDir.fsName + "/src");
+        srcFolder.create();
         new Folder(sessionDir.fsName + "/depth").create();
 
         var frameRate = comp.frameRate;
-        var frameCount = Math.max(1, Math.round(comp.workAreaDuration * frameRate));
+        var workAreaStart = comp.workAreaStart;
+        var workAreaDuration = comp.workAreaDuration;
+        var expectedCount = Math.max(1, Math.round(workAreaDuration * frameRate));
 
-        // Force full resolution ONCE for the whole batch instead of toggling
-        // it per frame - flipping resolutionFactor on every single capture
-        // was invalidating AE's internal render cache repeatedly and is the
-        // likely cause of frames silently coming back as empty 0-byte files
-        // partway through a range run.
-        var origResFactor = comp.resolutionFactor;
-        comp.resolutionFactor = [1, 1];
+        var rqItem = null;
+        try {
+            rqItem = app.project.renderQueue.items.add(comp);
+            rqItem.timeSpanStart = workAreaStart;
+            rqItem.timeSpanDuration = workAreaDuration;
+
+            var om = rqItem.outputModule(1);
+            var settings = om.getSettings(GetSettingsFormat.STRINGSETTABLE_FORMAT);
+            settings["Format"] = "PNG Sequence";
+            if ("Channels" in settings) settings["Channels"] = "RGB";
+            om.setSettings(settings);
+            om.file = new File(srcFolder.fsName + "/frame_[#####].png");
+
+            app.project.renderQueue.render();
+        } catch (e) {
+            try { if (rqItem) rqItem.remove(); } catch (e2) {}
+            return JSON.stringify({ error: "Render failed: " + e.toString() });
+        }
+        try { rqItem.remove(); } catch (e) {}
+
+        var rendered = srcFolder.getFiles("frame_*.png");
+        rendered.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+
+        if (!rendered || rendered.length === 0) {
+            return JSON.stringify({
+                error: "Render queue produced no frames in " + srcFolder.fsName,
+                diagnostics: { expectedCount: expectedCount, srcFolderExists: srcFolder.exists }
+            });
+        }
+
+        var framePaths = [];
+        for (var i = 0; i < rendered.length; i++) framePaths.push(rendered[i].fsName);
 
         return JSON.stringify({
             compName: comp.name,
@@ -123,75 +156,12 @@ var EZDEPTH = (function () {
             width: comp.width,
             height: comp.height,
             frameRate: frameRate,
-            workAreaStart: comp.workAreaStart,
-            workAreaDuration: comp.workAreaDuration,
-            frameCount: frameCount,
+            workAreaStart: workAreaStart,
+            workAreaDuration: workAreaDuration,
+            frameCount: framePaths.length,
+            expectedCount: expectedCount,
             sessionDir: sessionDir.fsName,
-            origResFactor: origResFactor
-        });
-    }
-
-    // Restores whatever Resolution/Down Sample Factor the comp had before a
-    // range run. Called after the batch finishes, and best-effort on error
-    // too, so a failed/aborted run doesn't leave the comp stuck at full res.
-    function restoreResolution(argsJson) {
-        var args = parse(argsJson); // { compId, compName, origResFactor }
-        var comp = findComp(args.compId, args.compName);
-        if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
-        try { comp.resolutionFactor = args.origResFactor; } catch (e) {}
-        return JSON.stringify({ ok: true });
-    }
-
-    // Captures a single frame of a range-render at an explicit time, into
-    // <sessionDir>/src/frame_NNNNN.png. Assumes the caller (getRangeInfo)
-    // already forced full resolution for the whole batch. Retries once if
-    // the first attempt comes back as an empty/stuck file.
-    function saveFrameAt(argsJson) {
-        var args = parse(argsJson); // { compId, compName, sessionDir, index, time }
-        var comp = findComp(args.compId, args.compName);
-        if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
-
-        var srcFolder = new Folder(args.sessionDir + "/src");
-        if (!srcFolder.exists) {
-            // Belt-and-suspenders: recreate it if it's missing for any reason
-            // (shouldn't happen - getRangeInfo creates it up front).
-            srcFolder.create();
-        }
-
-        var file = new File(args.sessionDir + "/src/frame_" + pad5(args.index) + ".png");
-        var attempts = 2;
-        var lastDiagnostics = null;
-
-        for (var attempt = 1; attempt <= attempts; attempt++) {
-            if (file.exists) file.remove();
-            try {
-                comp.saveFrameToPng(args.time, file);
-            } catch (e) {
-                return JSON.stringify({ error: "saveFrameToPng failed: " + e.toString() });
-            }
-
-            if (waitForStableFile(file, FRAME_WAIT_MS)) {
-                return JSON.stringify({ framePath: file.fsName, index: args.index });
-            }
-
-            lastDiagnostics = {
-                attempt: attempt,
-                srcFolderExists: srcFolder.exists,
-                fileExists: file.exists,
-                fileLength: file.exists ? file.length : -1,
-                time: args.time,
-                index: args.index,
-                compName: comp.name,
-                compDuration: comp.duration,
-                workAreaStart: comp.workAreaStart,
-                workAreaDuration: comp.workAreaDuration
-            };
-            $.sleep(300);
-        }
-
-        return JSON.stringify({
-            error: "saveFrameToPng did not produce a readable file after " + attempts + " attempts: " + file.fsName,
-            diagnostics: lastDiagnostics
+            framePaths: framePaths
         });
     }
 
@@ -353,9 +323,7 @@ var EZDEPTH = (function () {
         defaultOutputFolder: defaultOutputFolder,
         chooseOutputFolder: chooseOutputFolder,
         importResult: importResult,
-        getRangeInfo: getRangeInfo,
-        restoreResolution: restoreResolution,
-        saveFrameAt: saveFrameAt,
+        renderRangeToSequence: renderRangeToSequence,
         importSequenceResult: importSequenceResult
     };
 })();

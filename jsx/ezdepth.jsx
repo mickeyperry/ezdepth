@@ -3,6 +3,13 @@
 
 var EZDEPTH = (function () {
 
+    // How long to wait for a captured frame's PNG to finish writing before
+    // giving up. Generous on purpose: saveFrameToPng can return before the
+    // encode is flushed to disk, and the very first frame of a session on a
+    // heavy production comp (many layers/effects/precomps) can take well
+    // over a few seconds just to render, let alone write out.
+    var FRAME_WAIT_MS = 20000;
+
     function parse(json) { return eval("(" + json + ")"); }
 
     function activeComp() {
@@ -60,8 +67,17 @@ var EZDEPTH = (function () {
         }
         comp.resolutionFactor = origResFactor;
 
-        if (!waitForStableFile(file, 4000)) {
-            return JSON.stringify({ error: "saveFrameToPng did not produce a readable file: " + file.fsName });
+        if (!waitForStableFile(file, FRAME_WAIT_MS)) {
+            return JSON.stringify({
+                error: "saveFrameToPng did not produce a readable file: " + file.fsName,
+                diagnostics: {
+                    fileExists: file.exists,
+                    fileLength: file.exists ? file.length : -1,
+                    time: t,
+                    compName: comp.name,
+                    compDuration: comp.duration
+                }
+            });
         }
 
         return JSON.stringify({
@@ -114,6 +130,13 @@ var EZDEPTH = (function () {
         var comp = findComp(args.compId, args.compName);
         if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
 
+        var srcFolder = new Folder(args.sessionDir + "/src");
+        if (!srcFolder.exists) {
+            // Belt-and-suspenders: recreate it if it's missing for any reason
+            // (shouldn't happen - getRangeInfo creates it up front).
+            srcFolder.create();
+        }
+
         var file = new File(args.sessionDir + "/src/frame_" + pad5(args.index) + ".png");
         var origResFactor = comp.resolutionFactor;
         try {
@@ -125,8 +148,21 @@ var EZDEPTH = (function () {
         }
         comp.resolutionFactor = origResFactor;
 
-        if (!waitForStableFile(file, 4000)) {
-            return JSON.stringify({ error: "saveFrameToPng did not produce a readable file: " + file.fsName });
+        if (!waitForStableFile(file, FRAME_WAIT_MS)) {
+            return JSON.stringify({
+                error: "saveFrameToPng did not produce a readable file: " + file.fsName,
+                diagnostics: {
+                    srcFolderExists: srcFolder.exists,
+                    fileExists: file.exists,
+                    fileLength: file.exists ? file.length : -1,
+                    time: args.time,
+                    index: args.index,
+                    compName: comp.name,
+                    compDuration: comp.duration,
+                    workAreaStart: comp.workAreaStart,
+                    workAreaDuration: comp.workAreaDuration
+                }
+            });
         }
         return JSON.stringify({ framePath: file.fsName, index: args.index });
     }

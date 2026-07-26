@@ -244,7 +244,15 @@
 
         evalEx('EZDEPTH.saveCurrentFrame()', function (res) {
             var frame = safeParse(res);
-            if (!frame || frame.error) { fail(frame ? frame.error : 'No response from AE.'); return; }
+            if (!frame || frame.error) {
+                var msg = frame ? frame.error : 'No response from AE.';
+                if (frame && frame.diagnostics) {
+                    console.log('[ezdepth] saveCurrentFrame diagnostics:', frame.diagnostics);
+                    msg += ' (' + JSON.stringify(frame.diagnostics) + ')';
+                }
+                fail(msg);
+                return;
+            }
 
             var depthPath = frame.framePath.replace(/\.png$/i, '_depth.png');
             setStatus('Running Depth Anything V2...', 'working');
@@ -302,7 +310,15 @@
                 });
                 evalEx("EZDEPTH.saveFrameAt('" + escapeForEval(frameArgs) + "')", function (fres) {
                     var frame = safeParse(fres);
-                    if (!frame || frame.error) { fail(frame ? frame.error : 'Frame capture failed at index ' + i + '.'); return; }
+                    if (!frame || frame.error) {
+                        var msg = frame ? frame.error : ('Frame capture failed at index ' + i + '.');
+                        if (frame && frame.diagnostics) {
+                            console.log('[ezdepth] saveFrameAt diagnostics:', frame.diagnostics);
+                            msg += ' (' + JSON.stringify(frame.diagnostics) + ')';
+                        }
+                        fail(msg);
+                        return;
+                    }
 
                     var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
                     postDepth({ in: frame.framePath, out: depthPath, invert: invertToggle.checked }, function (err) {

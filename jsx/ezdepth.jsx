@@ -18,7 +18,7 @@ var EZDEPTH = (function () {
     }
 
     function tempFile(name) {
-        var dir = new Folder(Folder.temp.fsName + "/ae-mcp-depth");
+        var dir = new Folder(Folder.temp.fsName + "/EzDepth-temp");
         if (!dir.exists) dir.create();
         return dir.fsName + "/" + name;
     }
@@ -101,7 +101,7 @@ var EZDEPTH = (function () {
         if (!comp) return JSON.stringify({ error: "No active composition." });
 
         var stamp = Math.round(new Date().getTime()) + "_" + Math.round(Math.random() * 1e6);
-        var sessionDir = new Folder(Folder.temp.fsName + "/ae-mcp-depth/range_" + stamp);
+        var sessionDir = new Folder(Folder.temp.fsName + "/EzDepth-temp/range_" + stamp);
         sessionDir.create();
         new Folder(sessionDir.fsName + "/src").create();
         new Folder(sessionDir.fsName + "/depth").create();

@@ -74,6 +74,131 @@ var EZDEPTH = (function () {
         });
     }
 
+    function pad5(n) { return ("00000" + n).slice(-5); }
+
+    // Work-area info for the active comp, plus a fresh scratch session folder
+    // (with src/ and depth/ subfolders) that the range-capture loop writes
+    // into. Work area defaults to the whole comp duration unless the user
+    // has narrowed it, so "range" naturally means "full comp" by default.
+    function getRangeInfo() {
+        var comp = activeComp();
+        if (!comp) return JSON.stringify({ error: "No active composition." });
+
+        var stamp = Math.round(new Date().getTime()) + "_" + Math.round(Math.random() * 1e6);
+        var sessionDir = new Folder(Folder.temp.fsName + "/ae-mcp-depth/range_" + stamp);
+        sessionDir.create();
+        new Folder(sessionDir.fsName + "/src").create();
+        new Folder(sessionDir.fsName + "/depth").create();
+
+        var frameRate = comp.frameRate;
+        var frameCount = Math.max(1, Math.round(comp.workAreaDuration * frameRate));
+
+        return JSON.stringify({
+            compName: comp.name,
+            compId: comp.id,
+            width: comp.width,
+            height: comp.height,
+            frameRate: frameRate,
+            workAreaStart: comp.workAreaStart,
+            workAreaDuration: comp.workAreaDuration,
+            frameCount: frameCount,
+            sessionDir: sessionDir.fsName
+        });
+    }
+
+    // Captures a single frame of a range-render at an explicit time, into
+    // <sessionDir>/src/frame_NNNNN.png. Same full-resolution + stable-write
+    // handling as saveCurrentFrame.
+    function saveFrameAt(argsJson) {
+        var args = parse(argsJson); // { compId, compName, sessionDir, index, time }
+        var comp = findComp(args.compId, args.compName);
+        if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
+
+        var file = new File(args.sessionDir + "/src/frame_" + pad5(args.index) + ".png");
+        var origResFactor = comp.resolutionFactor;
+        try {
+            comp.resolutionFactor = [1, 1];
+            comp.saveFrameToPng(args.time, file);
+        } catch (e) {
+            comp.resolutionFactor = origResFactor;
+            return JSON.stringify({ error: "saveFrameToPng failed: " + e.toString() });
+        }
+        comp.resolutionFactor = origResFactor;
+
+        if (!waitForStableFile(file, 4000)) {
+            return JSON.stringify({ error: "saveFrameToPng did not produce a readable file: " + file.fsName });
+        }
+        return JSON.stringify({ framePath: file.fsName, index: args.index });
+    }
+
+    // Imports the completed <sessionDir>/depth/ PNG sequence, moves it into
+    // the chosen output folder, and drops it into the comp as a guide layer
+    // spanning the captured work area. Replaces a previous range result for
+    // the same comp instead of stacking.
+    function importSequenceResult(argsJson) {
+        var args = parse(argsJson); // { sessionDir, frameCount, compName, compId, outputFolder, workAreaStart, frameRate }
+        var depthDir = new Folder(args.sessionDir + "/depth");
+        if (!depthDir.exists) return JSON.stringify({ error: "Depth sequence folder not found: " + depthDir.fsName });
+
+        app.beginUndoGroup("Import Depth Sequence");
+        try {
+            var comp = findComp(args.compId, args.compName);
+            if (!comp) {
+                app.endUndoGroup();
+                return JSON.stringify({ error: "Comp not found: " + args.compName });
+            }
+
+            var outRoot = new Folder(args.outputFolder);
+            if (!outRoot.exists) outRoot.create();
+            var seqName = comp.name.replace(/[\\\/:*?"<>|]/g, "_") + "_Depth_Sequence";
+            var destFolder = new Folder(outRoot.fsName + "/" + seqName);
+            if (destFolder.exists) destFolder.remove();
+            destFolder.create();
+
+            for (var i = 0; i < args.frameCount; i++) {
+                var src = new File(depthDir.fsName + "/frame_" + pad5(i) + ".png");
+                if (!src.exists) {
+                    app.endUndoGroup();
+                    return JSON.stringify({ error: "Missing depth frame " + i + ": " + src.fsName });
+                }
+                src.copy(destFolder.fsName + "/frame_" + pad5(i) + ".png");
+            }
+
+            var firstFile = new File(destFolder.fsName + "/frame_00000.png");
+            var io = new ImportOptions(firstFile);
+            io.sequence = true;
+            var item = app.project.importFile(io);
+            try { item.mainSource.conformFrameRate = args.frameRate; } catch (e) {}
+
+            var layerName = comp.name + "_DepthSeq";
+            for (var li = comp.numLayers; li >= 1; li--) {
+                if (comp.layer(li).name === layerName) comp.layer(li).remove();
+            }
+
+            var layer = comp.layers.add(item);
+            layer.name = layerName;
+            layer.startTime = args.workAreaStart;
+            layer.moveToBeginning();
+            layer.property("Transform").property("Position").setValue([comp.width / 2, comp.height / 2]);
+            layer.property("Transform").property("Scale").setValue([
+                (comp.width / item.width) * 100,
+                (comp.height / item.height) * 100
+            ]);
+            layer.guideLayer = true;
+
+            app.endUndoGroup();
+            return JSON.stringify({
+                imported: item.name,
+                comp: comp.name,
+                layer: layer.name,
+                path: destFolder.fsName
+            });
+        } catch (e) {
+            app.endUndoGroup();
+            return JSON.stringify({ error: e.toString() });
+        }
+    }
+
     // Default output folder: an "EzDepth" folder next to the open .aep file.
     // Falls back to the OS temp dir if the project hasn't been saved yet.
     function defaultOutputFolder() {
@@ -163,6 +288,9 @@ var EZDEPTH = (function () {
         saveCurrentFrame: saveCurrentFrame,
         defaultOutputFolder: defaultOutputFolder,
         chooseOutputFolder: chooseOutputFolder,
-        importResult: importResult
+        importResult: importResult,
+        getRangeInfo: getRangeInfo,
+        saveFrameAt: saveFrameAt,
+        importSequenceResult: importSequenceResult
     };
 })();

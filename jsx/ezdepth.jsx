@@ -100,16 +100,13 @@ var EZDEPTH = (function () {
 
     function pad5(n) { return ("00000" + n).slice(-5); }
 
-    // Renders every frame in the comp's work area to a PNG sequence using
-    // AE's own Render Queue - a real render through AE's native pipeline,
-    // not a scripted per-frame viewer grab. This sidesteps the whole class
-    // of problems the old saveFrameToPng loop hit (viewer resolution/render
-    // cache state, frames silently coming back empty partway through a long
-    // run) since the render queue has its own independent render settings
-    // and AE shows its own native render progress/cancel UI while it runs.
-    // Work area defaults to the whole comp duration unless the user has
-    // narrowed it, so "range" naturally means "full comp" by default.
-    function renderRangeToSequence() {
+    // Sets up the scratch folders for a range render and reports the
+    // expected frame count, WITHOUT starting the render yet. Split out from
+    // startRangeRender() so the panel can start polling the output folder
+    // (via plain Node fs, independent of AE) before kicking off the long
+    // blocking render call - that's the only way to get any progress
+    // feedback out of a single synchronous renderQueue.render() invocation.
+    function prepareRangeRender() {
         var comp = activeComp();
         if (!comp) return JSON.stringify({ error: "No active composition." });
 
@@ -125,11 +122,39 @@ var EZDEPTH = (function () {
         var workAreaDuration = comp.workAreaDuration;
         var expectedCount = Math.max(1, Math.round(workAreaDuration * frameRate));
 
+        return JSON.stringify({
+            compName: comp.name,
+            compId: comp.id,
+            frameRate: frameRate,
+            workAreaStart: workAreaStart,
+            workAreaDuration: workAreaDuration,
+            expectedCount: expectedCount,
+            sessionDir: sessionDir.fsName,
+            srcFolder: srcFolder.fsName
+        });
+    }
+
+    // Renders every frame in the comp's work area to a PNG sequence using
+    // AE's own Render Queue - a real render through AE's native pipeline,
+    // not a scripted per-frame viewer grab. This sidesteps the whole class
+    // of problems the old saveFrameToPng loop hit (viewer resolution/render
+    // cache state, frames silently coming back empty partway through a long
+    // run) since the render queue has its own independent render settings
+    // and AE shows its own native render progress/cancel UI while it runs.
+    // Blocks until the whole render finishes - see prepareRangeRender() for
+    // how the panel gets progress feedback out of that.
+    function startRangeRender(argsJson) {
+        var args = parse(argsJson); // { compId, compName, sessionDir, srcFolder, workAreaStart, workAreaDuration }
+        var comp = findComp(args.compId, args.compName);
+        if (!comp) return JSON.stringify({ error: "Comp not found: " + args.compName });
+
+        var srcFolder = new Folder(args.srcFolder);
+
         var rqItem = null;
         try {
             rqItem = app.project.renderQueue.items.add(comp);
-            rqItem.timeSpanStart = workAreaStart;
-            rqItem.timeSpanDuration = workAreaDuration;
+            rqItem.timeSpanStart = args.workAreaStart;
+            rqItem.timeSpanDuration = args.workAreaDuration;
 
             var om = rqItem.outputModule(1);
             // Format/Channels are read-only via setSettings() in current AE
@@ -159,10 +184,7 @@ var EZDEPTH = (function () {
         rendered.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
 
         if (!rendered || rendered.length === 0) {
-            return JSON.stringify({
-                error: "Render queue produced no frames in " + srcFolder.fsName,
-                diagnostics: { expectedCount: expectedCount, srcFolderExists: srcFolder.exists }
-            });
+            return JSON.stringify({ error: "Render queue produced no frames in " + srcFolder.fsName });
         }
 
         var framePaths = [];
@@ -171,14 +193,10 @@ var EZDEPTH = (function () {
         return JSON.stringify({
             compName: comp.name,
             compId: comp.id,
-            width: comp.width,
-            height: comp.height,
-            frameRate: frameRate,
-            workAreaStart: workAreaStart,
-            workAreaDuration: workAreaDuration,
+            frameRate: comp.frameRate,
+            workAreaStart: args.workAreaStart,
             frameCount: framePaths.length,
-            expectedCount: expectedCount,
-            sessionDir: sessionDir.fsName,
+            sessionDir: args.sessionDir,
             framePaths: framePaths
         });
     }
@@ -341,7 +359,8 @@ var EZDEPTH = (function () {
         defaultOutputFolder: defaultOutputFolder,
         chooseOutputFolder: chooseOutputFolder,
         importResult: importResult,
-        renderRangeToSequence: renderRangeToSequence,
+        prepareRangeRender: prepareRangeRender,
+        startRangeRender: startRangeRender,
         importSequenceResult: importSequenceResult
     };
 })();

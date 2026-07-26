@@ -294,69 +294,94 @@
 
         cancelRequested = false;
         setBusy(true);
-        setStatus('Rendering via After Effects render queue... (see AE\'s own render progress window; this can take a while and can\'t be cancelled from here mid-render)', 'working');
+        setStatus('Preparing render...', 'working');
 
-        evalEx('EZDEPTH.renderRangeToSequence()', function (res) {
-            var range = safeParse(res);
-            if (!range || range.error) {
-                var msg = range ? range.error : 'No response from AE.';
-                if (range && range.diagnostics) {
-                    console.log('[ezdepth] renderRangeToSequence diagnostics:', range.diagnostics);
-                    msg += ' (' + JSON.stringify(range.diagnostics) + ')';
-                }
-                fail(msg);
-                return;
-            }
+        evalEx('EZDEPTH.prepareRangeRender()', function (pres) {
+            var prep = safeParse(pres);
+            if (!prep || prep.error) { fail(prep ? prep.error : 'No response from AE.'); return; }
 
-            var total = range.frameCount;
-            var framePaths = range.framePaths;
-            showProgress(0, total);
-            setStatus('Converting frame 1 / ' + total + ' in the background (AE is free)...', 'working');
+            var expected = prep.expectedCount;
+            showProgress(0, expected);
+            setStatus('Rendering frame 0 / ' + expected + ' via AE render queue...', 'working');
 
-            // Depth conversion: pure Node <-> Python HTTP calls from here on -
-            // no AE round trips at all, so AE stays completely free.
-            function convertFrame(i) {
-                if (cancelRequested) {
-                    cancelRequested = false;
-                    hideProgress();
-                    setBusy(false);
-                    setStatus('Cancelled after converting ' + i + ' / ' + total + ' frames.', 'error');
-                    return;
-                }
-                if (i >= total) {
-                    finishRange();
-                    return;
-                }
-                var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
-                postDepth({ in: framePaths[i], out: depthPath, invert: invertToggle.checked }, function (err) {
-                    if (err) { fail('Frame ' + i + ': ' + err); return; }
-                    showProgress(i + 1, total);
-                    setStatus('Converting frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + ' in the background (AE is free)...', 'working');
-                    convertFrame(i + 1);
+            // renderQueue.render() is one long blocking ExtendScript call with
+            // no way to get progress out of it directly - but it runs async
+            // from the panel's own JS, so we can just watch the output folder
+            // fill up with plain Node fs while it's in flight.
+            var renderPoll = setInterval(function () {
+                fs.readdir(prep.srcFolder, function (err, files) {
+                    if (err || !files) return;
+                    var count = files.filter(function (f) { return /^frame_\d+\.png$/i.test(f); }).length;
+                    if (count > expected) count = expected;
+                    showProgress(count, expected);
+                    setStatus('Rendering frame ' + count + ' / ' + expected + ' via AE render queue...', 'working');
                 });
-            }
+            }, 700);
 
-            function finishRange() {
-                setStatus('Importing depth sequence (' + total + ' frames)...', 'working');
-                var importArgs = JSON.stringify({
-                    sessionDir: range.sessionDir,
-                    frameCount: total,
-                    compName: range.compName,
-                    compId: range.compId,
-                    outputFolder: destFolder,
-                    workAreaStart: range.workAreaStart,
-                    frameRate: range.frameRate
-                });
-                evalEx("EZDEPTH.importSequenceResult('" + escapeForEval(importArgs) + "')", function (ires) {
-                    var imported = safeParse(ires);
-                    hideProgress();
-                    setBusy(false);
-                    if (!imported || imported.error) { fail(imported ? imported.error : 'Sequence import failed.'); return; }
-                    setStatus('Depth sequence added: ' + imported.layer + ' (' + total + ' frames)', 'success');
-                });
-            }
+            var startArgs = JSON.stringify({
+                compId: prep.compId,
+                compName: prep.compName,
+                sessionDir: prep.sessionDir,
+                srcFolder: prep.srcFolder,
+                workAreaStart: prep.workAreaStart,
+                workAreaDuration: prep.workAreaDuration
+            });
 
-            convertFrame(0);
+            evalEx("EZDEPTH.startRangeRender('" + escapeForEval(startArgs) + "')", function (res) {
+                clearInterval(renderPoll);
+                var range = safeParse(res);
+                if (!range || range.error) { fail(range ? range.error : 'No response from AE.'); return; }
+
+                var total = range.frameCount;
+                var framePaths = range.framePaths;
+                showProgress(0, total);
+                setStatus('Converting frame 1 / ' + total + ' in the background (AE is free)...', 'working');
+
+                // Depth conversion: pure Node <-> Python HTTP calls from here
+                // on - no AE round trips at all, so AE stays completely free.
+                function convertFrame(i) {
+                    if (cancelRequested) {
+                        cancelRequested = false;
+                        hideProgress();
+                        setBusy(false);
+                        setStatus('Cancelled after converting ' + i + ' / ' + total + ' frames.', 'error');
+                        return;
+                    }
+                    if (i >= total) {
+                        finishRange();
+                        return;
+                    }
+                    var depthPath = range.sessionDir + '/depth/frame_' + pad5(i) + '.png';
+                    postDepth({ in: framePaths[i], out: depthPath, invert: invertToggle.checked }, function (err) {
+                        if (err) { fail('Frame ' + i + ': ' + err); return; }
+                        showProgress(i + 1, total);
+                        setStatus('Converting frame ' + (i + 2 <= total ? i + 2 : total) + ' / ' + total + ' in the background (AE is free)...', 'working');
+                        convertFrame(i + 1);
+                    });
+                }
+
+                function finishRange() {
+                    setStatus('Importing depth sequence (' + total + ' frames)...', 'working');
+                    var importArgs = JSON.stringify({
+                        sessionDir: range.sessionDir,
+                        frameCount: total,
+                        compName: range.compName,
+                        compId: range.compId,
+                        outputFolder: destFolder,
+                        workAreaStart: range.workAreaStart,
+                        frameRate: range.frameRate
+                    });
+                    evalEx("EZDEPTH.importSequenceResult('" + escapeForEval(importArgs) + "')", function (ires) {
+                        var imported = safeParse(ires);
+                        hideProgress();
+                        setBusy(false);
+                        if (!imported || imported.error) { fail(imported ? imported.error : 'Sequence import failed.'); return; }
+                        setStatus('Depth sequence added: ' + imported.layer + ' (' + total + ' frames)', 'success');
+                    });
+                }
+
+                convertFrame(0);
+            });
         });
     }
 

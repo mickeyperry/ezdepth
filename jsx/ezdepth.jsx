@@ -124,10 +124,12 @@ var EZDEPTH = (function () {
             rqItem.timeSpanDuration = workAreaDuration;
 
             var om = rqItem.outputModule(1);
-            var settings = om.getSettings(GetSettingsFormat.STRINGSETTABLE_FORMAT);
-            settings["Format"] = "PNG Sequence";
-            if ("Channels" in settings) settings["Channels"] = "RGB";
-            om.setSettings(settings);
+            // Write the fields directly instead of reading via getSettings()
+            // first - the GetSettingsFormat enum member needed to read
+            // string-settable values isn't reliably present across AE
+            // versions/builds, but setSettings() accepts a partial object
+            // and merges it into the existing settings either way.
+            om.setSettings({ "Format": "PNG Sequence", "Channels": "RGB" });
             om.file = new File(srcFolder.fsName + "/frame_[#####].png");
 
             app.project.renderQueue.render();

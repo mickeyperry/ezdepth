@@ -52,13 +52,24 @@ viewer Resolution/Down Sample Factor (Full/Half/Third/Quarter).
 
 Click **Generate Depth (Full Range)** instead to process every frame in the
 comp's **work area** (which is the whole comp duration unless you've narrowed
-it) — a progress bar tracks capture + conversion frame by frame, and the
-result imports as a single `<CompName>_DepthSeq` guide layer spanning the
-range. This runs Depth Anything V2 per frame with no temporal awareness, so
-expect some frame-to-frame flicker on moving footage — that's a model
-limitation (a video-specific model would fix it, at the cost of a heavier
-engine), not a bug. Budget roughly a second or two per frame end-to-end on a
-modern NVIDIA GPU.
+it). AE renders the range natively through its own Render Queue as a PNG
+sequence (you'll see AE's own render progress/cancel window), then every
+frame is converted through the depth engine in the background — AE is free
+again as soon as rendering finishes. The result imports as a single
+`<CompName>_DepthSeq` guide layer spanning the range.
+
+**One-time setup required:** the render needs an Output Module Template
+named exactly `EzDepth PNG Sequence` (AE's scripting API can't set the
+output format directly, only apply a saved template). In After Effects:
+**Edit > Templates > Output Module... > New...**, set **Format** to
+**PNG Sequence**, click OK, name the template `EzDepth PNG Sequence`, click
+OK again. You only need to do this once per machine.
+
+This runs Depth Anything V2 per frame with no temporal awareness, so expect
+some frame-to-frame flicker on moving footage — that's a model limitation (a
+video-specific model would fix it, at the cost of a heavier engine), not a
+bug. Budget roughly a second or two per frame for the conversion pass on a
+modern NVIDIA GPU, on top of however long AE's own render takes.
 
 ## GPU acceleration
 

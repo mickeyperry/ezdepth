@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>EzDepth</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <img src="logo.png" alt="Logo" class="logo">
+            <div class="title">EZDEPTH</div>
+        </div>
+        <div class="header-right">
+            <span class="engine-dot" id="engineDot" title="Engine: starting"></span>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="subtitle">Depth Anything V2 &middot; current frame</div>
+
+        <button class="run-btn" id="generateBtn">GENERATE DEPTH</button>
+
+        <div class="toggle-row">
+            <span class="toggle-label">Invert (far = white)</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="invertToggle">
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+
+        <div class="path-row">
+            <span class="path-label">Save to</span>
+            <input type="text" class="path-input" id="outputFolder" placeholder="EzDepth output folder...">
+            <button class="browse-btn" id="browseBtn" title="Choose folder">&hellip;</button>
+        </div>
+    </div>
+
+    <div class="status-bar" id="statusBar">Starting engine&hellip;</div>
+
+    <div class="footer">
+        <div class="footer-text">Made by <span>MICKEY PERRY</span></div>
+    </div>
+
+    <script src="CSInterface.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>

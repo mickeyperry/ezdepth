@@ -12,7 +12,8 @@
 
     // Resolve this extension's own install location so the panel works
     // wherever it was installed, instead of a hardcoded dev-machine path.
-    var extensionPath = cs.getSystemPath(SystemPath.EXTENSION);
+    var extensionPath = cs.getSystemPath(SystemPath.EXTENSION)
+        .replace(/^file:\/{2,3}/, '');
     var SERVER_PY = path.join(extensionPath, 'python', 'server.py');
     var PYTHON_DIR = path.join(extensionPath, 'python');
 

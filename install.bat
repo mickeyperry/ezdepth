@@ -73,14 +73,8 @@ pause
 exit /b 1
 
 :install_deps
-where uv >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    uv pip install --python "%VENV_PY%" -r "%DEST%\python\requirements.txt"
-) else (
-    "%VENV_PY%" -m pip install --upgrade pip >nul
-    "%VENV_PY%" -m pip install -r "%DEST%\python\requirements.txt"
-)
-if %ERRORLEVEL% NEQ 0 (
+call :pip_install "%DEST%\python\requirements.txt"
+if !ERRORLEVEL! NEQ 0 (
     echo       ERROR: Failed to install Python packages.
     pause
     exit /b 1
@@ -92,21 +86,24 @@ echo.
 :: 4. PyTorch - CUDA build if an NVIDIA GPU is present, else CPU build
 :: ------------------------------------------------------------
 echo [4/4] Installing PyTorch...
+:: nvidia-smi ships in System32, but that is not always on PATH, so check
+:: the file directly too. Sysnative is the un-redirected view of System32,
+:: needed when a 32-bit host process launched this script - otherwise WOW64
+:: sends us to SysWOW64 and we wrongly conclude there is no GPU.
+set "HAS_NVIDIA="
 where nvidia-smi >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
+if !ERRORLEVEL! EQU 0 set "HAS_NVIDIA=1"
+if exist "%SystemRoot%\System32\nvidia-smi.exe" set "HAS_NVIDIA=1"
+if exist "%SystemRoot%\Sysnative\nvidia-smi.exe" set "HAS_NVIDIA=1"
+if defined HAS_NVIDIA (
     echo       NVIDIA GPU detected - installing CUDA build ^(~3 GB^)...
     set "TORCH_REQ=requirements-gpu.txt"
 ) else (
     echo       No NVIDIA GPU detected - installing CPU build ^(slower inference^)...
     set "TORCH_REQ=requirements-cpu.txt"
 )
-where uv >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    uv pip install --python "%VENV_PY%" -r "%DEST%\python\!TORCH_REQ!"
-) else (
-    "%VENV_PY%" -m pip install -r "%DEST%\python\!TORCH_REQ!"
-)
-if %ERRORLEVEL% NEQ 0 (
+call :pip_install "%DEST%\python\!TORCH_REQ!"
+if !ERRORLEVEL! NEQ 0 (
     echo       ERROR: Failed to install PyTorch.
     pause
     exit /b 1
@@ -127,3 +124,26 @@ echo  Depth PNGs save to an "EzDepth" folder next to your .aep by default
 echo  - change it any time with the Browse button in the panel.
 echo.
 pause
+exit /b 0
+
+:: ------------------------------------------------------------
+:: pip_install <requirements-file>
+:: Installs into the extension venv. Tries uv first (much faster), then
+:: falls back to the venv's own pip if uv fails - on some Windows setups
+:: uv's cache extraction dies with "Access is denied (os error 5)" when a
+:: real-time AV scanner holds files open during its rename step, which is
+:: easy to hit on the ~3 GB CUDA torch wheel.
+:: ------------------------------------------------------------
+:pip_install
+set "REQ=%~1"
+where uv >nul 2>&1
+if !ERRORLEVEL! EQU 0 (
+    uv pip install --python "%VENV_PY%" -r "!REQ!"
+    if !ERRORLEVEL! EQU 0 exit /b 0
+    echo       uv could not install these packages - retrying with pip...
+)
+:: A uv-created venv has no pip, so bootstrap it before falling back.
+"%VENV_PY%" -m pip --version >nul 2>&1
+if !ERRORLEVEL! NEQ 0 "%VENV_PY%" -m ensurepip --upgrade >nul 2>&1
+"%VENV_PY%" -m pip install -r "!REQ!"
+exit /b !ERRORLEVEL!

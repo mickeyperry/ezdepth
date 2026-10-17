@@ -123,10 +123,6 @@ CSInterface.prototype.dumpInstallationInfo = function() {
 };
 
 CSInterface.prototype.getOSInformation = function() {
-    var OnCSXS = this.getHostEnvironment();
-    if (OnCSXS) {
-        return OnCSXS.appUILocale;
-    }
     var OSInfo = "Unknown";
     if (navigator.platform) {
         if (navigator.platform.indexOf("Win") >= 0) {
